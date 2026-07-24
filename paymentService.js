@@ -3,7 +3,8 @@
 
 const PAYMENT_METHODS = {
   CASH_ON_DELIVERY: 'cash_on_delivery',
-  ONLINE:           'online_payment',
+  ONLINE:           'online_payment', // Deema BNPL
+  LOCAL:            'local_payment',  // MyFatoorah — KNET, cards & other local options
 };
 
 const PAYMENT_STATUS = {

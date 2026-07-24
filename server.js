@@ -1633,13 +1633,25 @@ app.get('/payment/callback', async (req, res) => {
 
     // Find order by the invoice ID we stored at initiation
     const { data: order } = await supabase
-      .from('orders').select('id').eq('transaction_id', invoiceId).single();
+      .from('orders').select('*').eq('transaction_id', invoiceId).single();
 
     if (order && isPaid) {
+      const alreadyPaid = order.payment_status === PaymentService.PAYMENT_STATUS.PAID;
+
       await supabase.from('orders').update({
-        payment_status: 'paid',
-        paid_at: new Date().toISOString()
+        status: 'confirmed',
+        ...PaymentService.markPaid(invoiceId),
+        updated_at: new Date().toISOString()
       }).eq('id', order.id);
+
+      if (!alreadyPaid) {
+        await decrementStock(order.items || []);
+        sendOrderConfirmationEmail({
+          ...order,
+          status: 'confirmed',
+          payment_status: PaymentService.PAYMENT_STATUS.PAID
+        }).catch(e => console.error('sendOrderConfirmationEmail (MyFatoorah) failed:', e.message));
+      }
 
       return res.redirect(`${process.env.FRONTEND_URL}/pages/confirm.html?orderId=${order.id}`);
     }
