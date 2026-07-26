@@ -64,6 +64,10 @@ async function processPayment({ payment_method, amount, customer_info }) {
  * via merchant_order_id, and so we can call Get Order Status using order_reference.
  */
 async function createDeemaSession({ orderId, amount, customer_info }) {
+  if (!process.env.DEEMA_BASE_URL || !process.env.DEEMA_SECRET_KEY) {
+    console.error('Deema env vars missing on this environment. DEEMA_BASE_URL set:', !!process.env.DEEMA_BASE_URL, 'DEEMA_SECRET_KEY set:', !!process.env.DEEMA_SECRET_KEY);
+    return { success: false, error: 'Deema is not configured on this server (missing env vars).' };
+  }
   try {
     const res = await fetch(`${process.env.DEEMA_BASE_URL}/api/merchant/v1/purchase`, {
       method: 'POST',
@@ -84,7 +88,17 @@ async function createDeemaSession({ orderId, amount, customer_info }) {
 
     const data = await res.json();
     if (!res.ok || !data.data || !data.data.redirect_link) {
-      return { success: false, error: (data && data.message) || 'Deema session creation failed.' };
+      // Log the raw response so the real reason shows up in Render logs —
+      // Deema may not use a `message` field, so without this we only ever
+      // see our own generic fallback text.
+      console.error('Deema rejected session creation. status:', res.status, 'body:', JSON.stringify(data));
+      const deemaMessage = (data && (data.message || data.error || data.errors)) || null;
+      return {
+        success: false,
+        error: deemaMessage
+          ? (typeof deemaMessage === 'string' ? deemaMessage : JSON.stringify(deemaMessage))
+          : `Deema session creation failed (HTTP ${res.status}).`
+      };
     }
 
     return {
@@ -93,8 +107,8 @@ async function createDeemaSession({ orderId, amount, customer_info }) {
       sessionId:  data.data.order_reference
     };
   } catch (e) {
-    console.error('createDeemaSession error:', e.message);
-    return { success: false, error: 'Deema request failed.' };
+    console.error('createDeemaSession network/parse error:', e.message, e.stack);
+    return { success: false, error: 'Deema request failed: ' + e.message };
   }
 }
 
