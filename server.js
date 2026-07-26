@@ -90,6 +90,12 @@ const supabase = createClient(
 //  - product is active (not soft-deleted)
 //  - qty is a valid positive integer
 //  - enough stock is available
+// Re-prices and re-validates every cart item against the database.
+// The client's `price`/`total` fields are NEVER trusted — they're only
+// used client-side for display. This function is the single source of
+// truth for what a customer actually gets charged, so it returns the
+// server-computed `items` (with real prices/names/images) and `total`
+// for the caller to persist instead of whatever the client sent.
 async function validateOrderItems(items) {
   if (!Array.isArray(items) || !items.length) {
     return { ok: false, error: 'No items in order.' };
@@ -108,9 +114,12 @@ async function validateOrderItems(items) {
   const ids = items.map(i => i.id);
   const { data: products, error } = await supabase
     .from('products')
-    .select('id, name, stock, is_deleted')
+    .select('id, name, brand, price, images, stock, is_deleted')
     .in('id', ids);
   if (error) return { ok: false, error: 'Could not verify products.' };
+
+  const sanitizedItems = [];
+  let total = 0;
 
   for (const item of items) {
     const product = (products || []).find(p => String(p.id) === String(item.id));
@@ -124,9 +133,25 @@ async function validateOrderItems(items) {
     if ((product.stock || 0) < item.qty) {
       return { ok: false, error: `${product.name} only has ${product.stock || 0} left in stock.` };
     }
+
+    const price = parseFloat(product.price) || 0;
+    total += price * item.qty;
+
+    sanitizedItems.push({
+      id:        product.id,
+      name:      product.name,
+      brand:     product.brand || null,
+      price:     price,
+      qty:       item.qty,
+      image_url: normalizeImages(product.images)[0] || null
+    });
   }
 
-  return { ok: true };
+  return {
+    ok: true,
+    items: sanitizedItems,
+    total: Math.round(total * 1000) / 1000 // round to 3dp (fils)
+  };
 }
 
 async function decrementStock(items) {
@@ -999,7 +1024,9 @@ app.post('/orders', requireAuth, async (req, res) => {
   try {
     const userId = req.user.id;
 
-   const { customer_info, items, total, payment_method } = req.body || {};
+   const { customer_info, items, payment_method } = req.body || {};
+   // NOTE: the client's `total` is intentionally ignored here — see
+   // validateOrderItems(), which recomputes it from real DB prices below.
 
     if (!items || !items.length)
       return fail(res, 'Your cart is empty. Add items before checking out.', 400);
@@ -1032,8 +1059,8 @@ app.post('/orders', requireAuth, async (req, res) => {
         customer_email:   customer_info.email   || null,
         customer_phone:   customer_info.phone,
         customer_address: customer_info.address,
-        items:            items,
-        total:            total,
+        items:            itemsCheck.items, // server-priced, not the client's copy
+        total:            itemsCheck.total, // server-computed, not the client's copy
         status:           'pending',
         notes:            customer_info.notes   || null,
         updated_at:       new Date().toISOString(),
@@ -1441,14 +1468,17 @@ app.get('/payment/verify', async (req, res) => {
 /* ── PAYMENT: POST /payment/initiate ── */
 app.post('/payment/initiate', requireAuth, async (req, res) => {
   try {
-    const { orderId, total } = req.body || {};
-    if (!orderId || !total) return fail(res, 'orderId and total required.', 400);
+    const { orderId } = req.body || {};
+    if (!orderId) return fail(res, 'orderId required.', 400);
 
     // Verify order belongs to this user
     const { data: order, error: orderErr } = await supabase
       .from('orders').select('*').eq('id', orderId).single();
     if (orderErr || !order) return fail(res, 'Order not found.', 404);
     if (order.user_id !== req.user.id) return fail(res, 'Access denied.', 403);
+
+    // Charge the server-stored total — never a client-supplied amount.
+    const total = order.total;
 
     const mfRes = await fetch(`${process.env.MYFATOORAH_BASE_URL}/v2/SendPayment`, {
       method: 'POST',
@@ -1492,17 +1522,18 @@ app.post('/payment/initiate', requireAuth, async (req, res) => {
 /* ── PAYMENT: POST /payment/deema/initiate ── */
 app.post('/payment/deema/initiate', requireAuth, async (req, res) => {
   try {
-    const { orderId, total } = req.body || {};
-    if (!orderId || !total) return fail(res, 'orderId and total required.', 400);
+    const { orderId } = req.body || {};
+    if (!orderId) return fail(res, 'orderId required.', 400);
 
     const { data: order, error: orderErr } = await supabase
       .from('orders').select('*').eq('id', orderId).single();
     if (orderErr || !order) return fail(res, 'Order not found.', 404);
     if (order.user_id !== req.user.id) return fail(res, 'Access denied.', 403);
 
+    // Charge the server-stored total — never a client-supplied amount.
     const result = await PaymentService.createDeemaSession({
       orderId,
-      amount: total,
+      amount: order.total,
       customer_info: {
         name:  order.customer_name,
         email: order.customer_email,
