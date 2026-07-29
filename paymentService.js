@@ -64,12 +64,16 @@ async function processPayment({ payment_method, amount, customer_info }) {
  * via merchant_order_id, and so we can call Get Order Status using order_reference.
  */
 async function createDeemaSession({ orderId, amount, customer_info }) {
-  // Check if environment variables are set
-  if (!process.env.DEEMA_BASE_URL || !process.env.DEEMA_WIDGET_KEY) {
-    console.error('Deema env vars missing. DEEMA_BASE_URL:', !!process.env.DEEMA_BASE_URL, 'DEEMA_WIDGET_KEY:', !!process.env.DEEMA_WIDGET_KEY);
+  // Check if environment variables are set.
+  // NOTE: Deema issues two separate keys — DEEMA_SECRET_KEY (secret, for
+  // server-to-server calls like this one) and DEEMA_WIDGET_KEY (for
+  // client-side/widget use only). Using the widget key here returns
+  // an "Unauthenticated" error from Deema.
+  if (!process.env.DEEMA_BASE_URL || !process.env.DEEMA_SECRET_KEY) {
+    console.error('Deema env vars missing. DEEMA_BASE_URL:', !!process.env.DEEMA_BASE_URL, 'DEEMA_SECRET_KEY:', !!process.env.DEEMA_SECRET_KEY);
     return { 
       success: false, 
-      error: 'Deema is not configured on this server. Please set DEEMA_BASE_URL and DEEMA_WIDGET_KEY environment variables.' 
+      error: 'Deema is not configured on this server. Please set DEEMA_BASE_URL and DEEMA_SECRET_KEY environment variables.' 
     };
   }
 
@@ -90,7 +94,7 @@ async function createDeemaSession({ orderId, amount, customer_info }) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.DEEMA_WIDGET_KEY}`
+        'Authorization': `Bearer ${process.env.DEEMA_SECRET_KEY}`
       },
       body: JSON.stringify(requestBody)
     });
@@ -142,13 +146,13 @@ async function verifyDeemaPayment({ order_reference }) {
   try {
     if (!order_reference) return { success: false, error: 'order_reference required.' };
 
-    if (!process.env.DEEMA_BASE_URL || !process.env.DEEMA_WIDGET_KEY) {
+    if (!process.env.DEEMA_BASE_URL || !process.env.DEEMA_SECRET_KEY) {
       return { success: false, error: 'Deema is not configured.' };
     }
 
     const url = `${process.env.DEEMA_BASE_URL}/api/merchant/v1/purchase/status?order_reference=${encodeURIComponent(order_reference)}`;
     const res = await fetch(url, {
-      headers: { 'Authorization': `Bearer ${process.env.DEEMA_WIDGET_KEY}` }
+      headers: { 'Authorization': `Bearer ${process.env.DEEMA_SECRET_KEY}` }
     });
     const data = await res.json();
 
